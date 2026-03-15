@@ -15,7 +15,7 @@ steps:
   - name: Validate branch commits
     uses: simoncraf/coauthorcheck-action@v0.1.0
     with:
-      package-version: "0.5.0"
+      package-version: "0.6.0"
       range: origin/main..HEAD
 ```
 
@@ -52,7 +52,7 @@ jobs:
       - name: Validate PR commits
         uses: simoncraf/coauthorcheck-action@v0.1.0
         with:
-          package-version: "0.5.0"
+          package-version: "0.6.0"
           range: origin/${{ github.base_ref }}..HEAD
 ```
 
@@ -79,6 +79,6 @@ jobs:
       - name: Validate branch commits
         uses: simoncraf/coauthorcheck-action@v0.1.0
         with:
-          package-version: "0.5.0"
+          package-version: "0.6.0"
           range: origin/main..HEAD
 ```
