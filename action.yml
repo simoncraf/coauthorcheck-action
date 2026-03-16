@@ -49,7 +49,7 @@ inputs:
     default: "coauthorcheck"
 outputs:
   status:
-    description: Validation result status: pass, fail, or error.
+    description: "Validation result status: pass, fail, or error."
     value: ${{ steps.finalize.outputs.status }}
   exit-code:
     description: Raw coauthorcheck exit code.
@@ -64,7 +64,7 @@ outputs:
     description: Number of reported warnings.
     value: ${{ steps.finalize.outputs.warning-count }}
   comment-action:
-    description: Pull request comment action: created, updated, deleted, or none.
+    description: "Pull request comment action: created, updated, deleted, or none."
     value: ${{ steps.finalize.outputs.comment-action }}
 runs:
   using: composite
