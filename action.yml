@@ -27,6 +27,45 @@ inputs:
     description: Working directory where coauthorcheck should run.
     required: false
     default: "."
+  comment-on-pr:
+    description: Create or update a pull request comment with validation results.
+    required: false
+    default: "false"
+  comment-mode:
+    description: Comment policy for pull requests, either failures-only or always.
+    required: false
+    default: "failures-only"
+  delete-comment-on-success:
+    description: Delete an existing action comment after a successful validation run.
+    required: false
+    default: "true"
+  github-token:
+    description: GitHub token used for pull request comment operations.
+    required: false
+    default: ""
+  comment-header:
+    description: Markdown heading used for the pull request comment.
+    required: false
+    default: "coauthorcheck"
+outputs:
+  status:
+    description: Validation result status: pass, fail, or error.
+    value: ${{ steps.finalize.outputs.status }}
+  exit-code:
+    description: Raw coauthorcheck exit code.
+    value: ${{ steps.finalize.outputs.exit-code }}
+  issue-count:
+    description: Number of reported validation issues.
+    value: ${{ steps.finalize.outputs.issue-count }}
+  invalid-commit-count:
+    description: Number of commits with validation issues.
+    value: ${{ steps.finalize.outputs.invalid-commit-count }}
+  warning-count:
+    description: Number of reported warnings.
+    value: ${{ steps.finalize.outputs.warning-count }}
+  comment-action:
+    description: Pull request comment action: created, updated, deleted, or none.
+    value: ${{ steps.finalize.outputs.comment-action }}
 runs:
   using: composite
   steps:
@@ -46,13 +85,134 @@ runs:
         fi
 
     - name: Run coauthorcheck
+      id: run
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_RANGE: ${{ inputs.range }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_COMMENT_ON_PR: ${{ inputs.comment-on-pr }}
+        INPUT_COMMENT_MODE: ${{ inputs.comment-mode }}
+        INPUT_DELETE_COMMENT_ON_SUCCESS: ${{ inputs.delete-comment-on-success }}
+        INPUT_COMMENT_HEADER: ${{ inputs.comment-header }}
       run: |
         set -euo pipefail
-        args=("--format" "${{ inputs.format }}")
-        if [ -n "${{ inputs.config }}" ]; then
-          args+=("--config" "${{ inputs.config }}")
+        python "${{ github.action_path }}/scripts/coauthorcheck_action.py"
+
+    - name: Upsert PR comment
+      id: upsert_comment
+      if: ${{ inputs.comment-on-pr == 'true' && steps.run.outputs.comment-intent == 'upsert' }}
+      uses: actions/github-script@v7
+      env:
+        COMMENT_BODY_PATH: ${{ steps.run.outputs.comment-body-path }}
+      with:
+        github-token: ${{ inputs.github-token != '' && inputs.github-token || github.token }}
+        script: |
+          const fs = require('fs');
+          const marker = '<!-- coauthorcheck-comment -->';
+          const prNumber = context.payload.pull_request?.number;
+
+          if (!prNumber) {
+            core.warning('comment-on-pr is enabled, but this workflow is not running in a pull_request context. Skipping comment.');
+            core.setOutput('comment-action', 'none');
+            return;
+          }
+
+          const body = fs.readFileSync(process.env.COMMENT_BODY_PATH, 'utf8');
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: prNumber,
+            per_page: 100,
+          });
+
+          const existing = comments.find((comment) =>
+            comment.user?.type === 'Bot' && comment.body?.includes(marker)
+          );
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body,
+            });
+            core.setOutput('comment-action', 'updated');
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body,
+            });
+            core.setOutput('comment-action', 'created');
+          }
+
+    - name: Delete PR comment
+      id: delete_comment
+      if: ${{ inputs.comment-on-pr == 'true' && steps.run.outputs.comment-intent == 'delete' }}
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token != '' && inputs.github-token || github.token }}
+        script: |
+          const marker = '<!-- coauthorcheck-comment -->';
+          const prNumber = context.payload.pull_request?.number;
+
+          if (!prNumber) {
+            core.warning('delete-comment-on-success is enabled, but this workflow is not running in a pull_request context. Nothing to delete.');
+            core.setOutput('comment-action', 'none');
+            return;
+          }
+
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: prNumber,
+            per_page: 100,
+          });
+
+          const existing = comments.find((comment) =>
+            comment.user?.type === 'Bot' && comment.body?.includes(marker)
+          );
+
+          if (!existing) {
+            core.setOutput('comment-action', 'none');
+            return;
+          }
+
+          await github.rest.issues.deleteComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            comment_id: existing.id,
+          });
+          core.setOutput('comment-action', 'deleted');
+
+    - name: Finalize outputs
+      id: finalize
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        comment_action="none"
+        if [ -n "${{ steps.upsert_comment.outputs.comment-action }}" ]; then
+          comment_action="${{ steps.upsert_comment.outputs.comment-action }}"
+        elif [ -n "${{ steps.delete_comment.outputs.comment-action }}" ]; then
+          comment_action="${{ steps.delete_comment.outputs.comment-action }}"
         fi
-        args+=("${{ inputs.range }}")
-        coauthorcheck "${args[@]}"
+
+        {
+          echo "status=${{ steps.run.outputs.status }}"
+          echo "exit-code=${{ steps.run.outputs.exit-code }}"
+          echo "issue-count=${{ steps.run.outputs.issue-count }}"
+          echo "invalid-commit-count=${{ steps.run.outputs.invalid-commit-count }}"
+          echo "warning-count=${{ steps.run.outputs.warning-count }}"
+          echo "comment-action=${comment_action}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Enforce exit semantics
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        exit "${{ steps.run.outputs.exit-code }}"
